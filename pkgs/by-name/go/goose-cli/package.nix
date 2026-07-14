@@ -3,7 +3,6 @@
   stdenv,
   callPackage,
   fetchFromGitHub,
-  fetchurl,
   rustPlatform,
   cmake,
   dbus,
@@ -14,6 +13,7 @@
   cacert,
   writableTmpDirAsHomeHook,
   versionCheckHook,
+  git,
   nix-update-script,
   llvmPackages,
   makeWrapper,
@@ -34,36 +34,32 @@
   wl-clipboard,
 }:
 
-let
-  gpt-4o-tokenizer = fetchurl {
-    url = "https://huggingface.co/Xenova/gpt-4o/resolve/31376962e96831b948abe05d420160d0793a65a4/tokenizer.json";
-    hash = "sha256-Q6OtRhimqTj4wmFBVOoQwxrVOmLVaDrgsOYTNXXO8H4=";
-    meta.license = lib.licenses.mit;
-  };
-  claude-tokenizer = fetchurl {
-    url = "https://huggingface.co/Xenova/claude-tokenizer/resolve/cae688821ea05490de49a6d3faa36468a4672fad/tokenizer.json";
-    hash = "sha256-wkFzffJLTn98mvT9zuKaDKkD3LKIqLdTvDRqMJKRF2c=";
-    meta.license = lib.licenses.mit;
-  };
-in
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "goose-cli";
-  version = "1.28.0";
+  version = "1.43.0";
 
   src = fetchFromGitHub {
     owner = "aaif-goose";
     repo = "goose";
     tag = "v${finalAttrs.version}";
-    hash = "sha256-/1TtsnNiLoTkvyeFR282qSpo+Jt3pvFxduJ7lyzsTXI=";
+    hash = "sha256-lmeS+iOyZ262H9NykK3GFIEA7ipOnqnurRKPY8xbwKw=";
   };
 
-  cargoHash = "sha256-bhnbSjGqyWbQd5PjZ116JH91vjVy6R/+iBlNKL6debg=";
+  postPatch = ''
+    # rustc overflows its query depth limit compiling the ACP test binaries
+    # (deeply nested async closures in acp::server::dispatch). Upstream added
+    # #![recursion_limit = "256"] only to acp_provider_test.rs; extend it to
+    # the sibling test files.
+    for f in crates/goose/tests/acp_*_test.rs; do
+      grep -q recursion_limit "$f" || sed -i '1i #![recursion_limit = "256"]' "$f"
+    done
+  '';
+
+  cargoHash = "sha256-OgYI8hVRUIY/Kl0PKJ+LZ98UCNrW7/p211EUtGOWwiI=";
 
   cargoBuildFlags = [
     "--bin"
     "goose"
-    "--bin"
-    "goosed"
   ];
 
   nativeBuildInputs = [
@@ -84,12 +80,6 @@ rustPlatform.buildRustPackage (finalAttrs: {
     LIBCLANG_PATH = "${lib.getLib llvmPackages.libclang}/lib";
     RUSTY_V8_ARCHIVE = librusty_v8;
   };
-
-  preBuild = ''
-    mkdir -p tokenizer_files/Xenova--gpt-4o tokenizer_files/Xenova--claude-tokenizer
-    ln -s ${gpt-4o-tokenizer} tokenizer_files/Xenova--gpt-4o/tokenizer.json
-    ln -s ${claude-tokenizer} tokenizer_files/Xenova--claude-tokenizer/tokenizer.json
-  '';
 
   postFixup = ''
     wrapProgram $out/bin/goose \
@@ -116,6 +106,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
   nativeCheckInputs = [
     writableTmpDirAsHomeHook
     cacert
+    git
   ];
 
   __darwinAllowLocalNetworking = true;
@@ -138,22 +129,14 @@ rustPlatform.buildRustPackage (finalAttrs: {
     "--skip=test_model_not_in_openrouter"
     "--skip=test_pricing_cache_performance"
     "--skip=test_pricing_refresh"
-    "--skip=transport::streamable_http::tests::test_handle_outgoing_message_http_error"
-    "--skip=transport::streamable_http::tests::test_handle_outgoing_message_invalid_json"
-    "--skip=transport::streamable_http::tests::test_handle_outgoing_message_notification"
-    "--skip=transport::streamable_http::tests::test_handle_outgoing_message_session_id_handling"
-    "--skip=transport::streamable_http::tests::test_handle_outgoing_message_session_not_found"
-    "--skip=transport::streamable_http::tests::test_handle_outgoing_message_successful_request"
-    "--skip=routes::audio::tests::test_transcribe_endpoint_requires_auth"
-    "--skip=routes::config_management::tests::test_get_provider_models_openai_configured"
-    # tunnel tests that need external connectivity to Cloudflare
-    "--skip=tunnel::lapstone_test::test_tunnel_end_to_end"
-    "--skip=tunnel::lapstone_test::test_tunnel_post_request"
     # integration tests that need network access
     "--skip=test_replayed_session::vec_uvx_mcp_server_fetch_vec_calltoolrequestparam_name_fetch_into_arguments_some_object_url_https_example_com_vec_expects"
     "--skip=test_replayed_session::vec_github_mcp_server_stdio_vec_calltoolrequestparam_name_get_file_contents_into_arguments_some_object_owner_block_repo_goose_path_readme_md_sha_ab62b863c1666232a67048b6c4e10007a2a5b83c_vec_github_personal_access_token_expects"
-    "--skip=test_replayed_session::vec_cargo_run_quiet_p_goose_server_bin_goosed_mcp_developer_vec_calltoolrequestparam_name_text_editor_into_arguments_some_object_command_view_path_goose_crates_goose_tests_tmp_goose_txt_calltoolrequestparam_name_text_editor_into_arguments_some_object_command_str_replace_path_goose_crates_goose_tests_tmp_goose_txt_old_str_goose_new_str_goose_modified_by_test_calltoolrequestparam_name_shell_into_arguments_some_object_command_cat_goose_crates_goose_tests_tmp_goose_txt_calltoolrequestparam_name_text_editor_into_arguments_some_object_command_str_replace_path_goose_crates_goose_tests_tmp_goose_txt_old_str_goose_modified_by_test_new_str_goose_calltoolrequestparam_name_list_windows_into_arguments_some_object_vec_expects"
     "--skip=test_replayed_session::vec_npx_y_modelcontextprotocol_server_everything_vec_calltoolrequestparam_name_echo_into_arguments_some_object_message_hello_world_calltoolrequestparam_name_add_into_arguments_some_object_a_1_b_2_calltoolrequestparam_name_longrunningoperation_into_arguments_some_object_duration_1_steps_5_calltoolrequestparam_name_structuredcontent_into_arguments_some_object_location_11238_vec_expects"
+    # global login-shell PATH cache (hooks::hook_path OnceLock) is poisoned by
+    # parallel tests overriding GOOSE_SHELL; fails in the sandbox
+    "--skip=hooks::tests::matcher_filters_by_tool_name"
+    "--skip=plugins::discovery::tests::enabled_in_config_keeps_plugin_without_modifying_config"
   ]
   ++ lib.optionals stdenv.hostPlatform.isLinux [
     "--skip=context_mgmt::auto_compact::tests::test_auto_compact_respects_config"
