@@ -1,3 +1,13 @@
+# pkgs/by-name/go/goose-desktop/package.nix
+# Adapted from caniko's goose-desktop init (PR #511735, 1.33.1) for goose 1.46.0.
+# Deltas vs 1.33.1:
+#   - backend binary is now `goose` (goose-server/goosed removed upstream);
+#     installed into desktop/src/bin so forge ships it as an extraResource
+#   - `generate-api` build script removed upstream
+#   - lightningcss native dep no longer in the lockfile
+#   - GOOSED_BINARY env override dropped (no longer read by main.ts)
+#   - 1.46.0: desktop app moved to ui/desktop (covered by src = .../ui);
+#     lockfile native deps unchanged (esbuild 0.27.4 / rollup 4.59.0 / oxide 4.2.2)
 {
   lib,
   stdenv,
@@ -6,7 +16,7 @@
   pnpmConfigHook,
   nodejs_24,
   pnpm_10,
-  electron_41,
+  electron_43,
   makeWrapper,
   makeDesktopItem,
   copyDesktopItems,
@@ -31,8 +41,10 @@
 
 let
   nodejs = nodejs_24;
-  pnpm = pnpm_10.override { inherit nodejs; };
-  electron = electron_41;
+  pnpm = pnpm_10.override { nodejs-slim = nodejs; };
+  electron = electron_43;
+  # Platform-native optional deps that pnpm's single-arch fixed-output fetch
+  # can't pull in. Versions and hashes taken from ui/pnpm-lock.yaml at v1.43.0.
   rollupLinuxX64Gnu = fetchurl {
     url = "https://registry.npmjs.org/@rollup/rollup-linux-x64-gnu/-/rollup-linux-x64-gnu-4.59.0.tgz";
     hash = "sha512-3AHmtQq/ppNuUspKAlvA8HtLybkDflkMuLK4DPo77DfthRb71V84/c4MlWJXixZz4uruIH4uaa07IqoAkG64fg==";
@@ -40,10 +52,6 @@ let
   esbuildLinuxX64 = fetchurl {
     url = "https://registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-0.27.4.tgz";
     hash = "sha512-S5qOXrKV8BQEzJPVxAwnryi2+Iq5pB40gTEIT69BQONqR7JH1EPIcQ/Uiv9mCnn05jff9umq/5nqzxlqTOg9NA==";
-  };
-  lightningcssLinuxX64Gnu = fetchurl {
-    url = "https://registry.npmjs.org/lightningcss-linux-x64-gnu/-/lightningcss-linux-x64-gnu-1.32.0.tgz";
-    hash = "sha512-V7Qr52IhZmdKPVr+Vtw8o+WLsQJYCTd8loIfpDaMRWGUZfBOYEJeyJIkqGIDMZPwPx24pUMfwSxxI8phr/MbOA==";
   };
   tailwindcssOxideLinuxX64Gnu = fetchurl {
     url = "https://registry.npmjs.org/@tailwindcss/oxide-linux-x64-gnu/-/oxide-linux-x64-gnu-4.2.2.tgz";
@@ -55,12 +63,14 @@ stdenv.mkDerivation (finalAttrs: {
   version = goose-cli.version;
   __structuredAttrs = true;
   src = "${goose-cli.src}/ui";
+
   pnpmWorkspaces = [
     "@aaif/goose-binary-linux-x64"
     "@aaif/goose-sdk"
     "goose-app"
   ];
-  # Keep the fixed-output dependency fetch scoped to the only supported desktop platform.
+  # Keep the fixed-output dependency fetch scoped to the only supported
+  # desktop platform.
   pnpmInstallFlags = [
     "--cpu=x64"
     "--libc=glibc"
@@ -81,7 +91,7 @@ stdenv.mkDerivation (finalAttrs: {
       ;
     inherit pnpm;
     fetcherVersion = 3;
-    hash = "sha256-DdLhGEKPSKJEF9LyOqBY4BR/JB/o6t9VfQGXWQmMDEI=";
+    hash = "sha256-FWHMaUyzK3tgJ/jlaxgdIPj+DGwUmi1hQ7MCK3lrYDo=";
   };
 
   strictDeps = true;
@@ -104,6 +114,19 @@ stdenv.mkDerivation (finalAttrs: {
   postPatch = ''
     substituteInPlace desktop/src/updates.ts \
       --replace-fail "export const UPDATES_ENABLED = true;" "export const UPDATES_ENABLED = false;"
+
+    # We launch via the system electron, so process.resourcesPath points at
+    # electron's own resources dir, not ours. Inject the real path as the
+    # first candidate. (GOOSE_BINARY env is rejected in packaged mode.)
+    substituteInPlace desktop/src/gooseServe.ts \
+      --replace-fail "const possiblePaths: string[] = [];" \
+        "const possiblePaths: string[] = ['$out/opt/goose-desktop/resources/bin/goose'];"
+
+    # generate-schema.ts resolves these two levels above ui/, which our
+    # src (goose-cli.src's ui/ subdir) doesn't include
+    mkdir -p ../crates/goose
+    cp ${goose-cli.src}/crates/goose/acp-schema.json ../crates/goose/
+    cp ${goose-cli.src}/crates/goose/acp-meta.json ../crates/goose/
   '';
 
   buildPhase = ''
@@ -127,7 +150,12 @@ stdenv.mkDerivation (finalAttrs: {
     substituteInPlace node_modules/@electron/packager/dist/packager.js \
       --replace-fail "await this.getElectronZipPath(downloadOpts)" "'$(pwd)/electron.zip'"
 
-    install -Dm755 ${lib.getExe' goose-cli "goosed"} desktop/src/bin/goosed
+    # 1.43.0: the desktop backend is the goose CLI binary itself
+    # (goose-server/goosed was removed upstream). Ship it via the src/bin
+    # extraResource so it stays executable outside app.asar, and populate
+    # the workspace binary package for anything resolving it via npm.
+    install -Dm755 ${lib.getExe goose-cli} desktop/src/bin/goose
+    # install -Dm755 ${lib.getExe goose-cli} goose-binary/goose-binary-linux-x64/bin/goose
     patchShebangs desktop/node_modules desktop/src/bin
 
     mkdir -p node_modules/@rollup/rollup-linux-x64-gnu
@@ -138,17 +166,16 @@ stdenv.mkDerivation (finalAttrs: {
     tar -xzf ${esbuildLinuxX64} \
       --strip-components=1 \
       -C node_modules/@esbuild/linux-x64
-    tar -xzf ${lightningcssLinuxX64Gnu} \
-      --strip-components=1 \
-      -C node_modules/lightningcss \
-      package/lightningcss.linux-x64-gnu.node
     mkdir -p node_modules/@tailwindcss/oxide-linux-x64-gnu
     tar -xzf ${tailwindcssOxideLinuxX64Gnu} \
       --strip-components=1 \
       -C node_modules/@tailwindcss/oxide-linux-x64-gnu
 
+    # @aaif/goose-sdk's package.json points at dist/, which must be built
+    # (schema generation + tsc) before vite can resolve the workspace dep
+    pnpm --dir sdk run build
+
     node desktop/scripts/prepare-platform-binaries.js
-    pnpm --dir desktop run generate-api
     pnpm --dir desktop run i18n:compile
     pnpm --dir desktop exec electron-forge package --platform=linux --arch=x64
 
@@ -172,7 +199,6 @@ stdenv.mkDerivation (finalAttrs: {
       --run "cd $out/opt/goose-desktop/resources" \
       --add-flags "$out/opt/goose-desktop/resources/app.asar" \
       --set ELECTRON_FORCE_IS_PACKAGED 1 \
-      --set GOOSED_BINARY "$out/opt/goose-desktop/resources/bin/goosed" \
       --prefix PATH : ${
         lib.makeBinPath [
           bash
@@ -211,7 +237,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   passthru.tests.smoke = runCommand "${finalAttrs.pname}-smoke" { } ''
     test -x ${finalAttrs.finalPackage}/bin/goose-desktop
-    ${finalAttrs.finalPackage}/opt/goose-desktop/resources/bin/goosed --help >/dev/null
+    ${finalAttrs.finalPackage}/opt/goose-desktop/resources/bin/goose --version >/dev/null
     touch "$out"
   '';
 
